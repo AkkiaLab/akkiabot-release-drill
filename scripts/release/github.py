@@ -77,6 +77,7 @@ class GitHub(Protocol):
     def set_sealed(self, branch: str, *, sealed: bool) -> None: ...
     def branch_rule_types(self, branch: str) -> set[str]: ...
     def find_issue(self, marker: str) -> Issue | None: ...
+    def open_conflict_issues(self) -> list[Issue]: ...
     def create_issue(self, title: str, body: str, labels: list[str]) -> Issue: ...
     def comment_issue(self, number: int, body: str) -> None: ...
     def close_issue(self, number: int, comment: str) -> None: ...
@@ -228,6 +229,16 @@ class GhCli:
             if marker in (issue.get("body") or ""):
                 return Issue(issue["number"], issue["body"], issue.get("html_url", ""))
         return None
+
+    def open_conflict_issues(self) -> list[Issue]:
+        issues = self._api(
+            self._r(f"issues?state=open&labels={CONFLICT_LABEL}&per_page=100"), paginate=True
+        )
+        return [
+            Issue(i["number"], i.get("body") or "", i.get("html_url", ""))
+            for i in issues or []
+            if "pull_request" not in i
+        ]
 
     def create_issue(self, title: str, body: str, labels: list[str]) -> Issue:
         data = self._api(

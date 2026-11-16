@@ -43,7 +43,8 @@ cp "$FAKE_SRC/$path" "$out"
 """
 
 FAKE_OP = r"""#!/usr/bin/env bash
-# op inject -f -i <in> -o <out>
+# op inject -f -i <in> -o <out>; like the real op, it drains a piped stdin
+[[ -t 0 ]] || cat >/dev/null
 cp "$4" "$6"
 """
 
@@ -201,3 +202,30 @@ def test_bad_arguments() -> None:
     assert (
         subprocess.run(["bash", str(SCRIPT), NEW], check=False, capture_output=True).returncode == 2
     )
+
+
+def test_upgrade_piped_on_stdin_runs_to_the_end(stack: dict[str, Path]) -> None:
+    """`deploy` pipes the script into `bash -s`; a command reading stdin (op inject)
+    must not swallow the rest of the script (BOT-40: it ended silently with 0)."""
+    full_env = {
+        "PATH": f"{stack['bin']}:{os.environ['PATH']}",
+        "FAKE_SRC": str(stack["src"]),
+        "FAKE_LOG": str(stack["log"]),
+        "UPGRADE_HEALTH_TRIES": "2",
+        "UPGRADE_HEALTH_DELAY": "0",
+        "HOME": str(stack["dir"]),
+    }
+    args = [NEW, "--migrations", "unchanged", "--release", "v1.0.0-rc.1"]
+    proc = subprocess.run(
+        ["bash", "-s", "--", *args, "--render-template", "staging/app.env.tpl"],
+        input=SCRIPT.read_text(),
+        cwd=stack["dir"],
+        env=full_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert tag_of(stack) == NEW
+    assert (stack["dir"] / ".running").read_text().strip() == NEW
+    assert log(stack).rstrip().endswith("ok")

@@ -115,6 +115,45 @@ def test_conflict_pauses_one_direction_dedupes_and_resumes(repo: Repo, gh: FakeG
     assert repo.show("refs/heads/master", "README.md") == "resolved"
 
 
+def test_conflict_issue_of_a_rerouted_direction_is_closed_once_resolved(
+    repo: Repo, gh: FakeGitHub
+) -> None:
+    """BOT-40 drill: the source is sealed and a newer patch release now carries its
+    changes, so the conflict continues as a new direction. The issue of the old
+    direction must be closed, not left open forever."""
+    _bootstrap(repo)
+    run_cascade(repo.git, gh, trigger="sync")
+    src = repo.commit("releases/v1.0.1", "README.md", "patch line\n")
+    repo.commit("releases/v1.1.0", "README.md", "regular line\n")
+    run_cascade(repo.git, gh, trigger="conflict")
+    old = Hop(V("v1.0.1"), V("v1.1.0"))
+    assert [old.marker in i.body for i in gh.issues.values()] == [True]
+
+    # v1.0.1 is sealed and tagged; v1.0.2 is cut from that tag and takes over.
+    gh.sealed.add("releases/v1.0.1")
+    repo.push(src, "refs/tags/v1.0.1")
+    create_release(repo.git, V("v1.0.2"))
+    rerouted = run_cascade(repo.git, gh, trigger="rerouted")
+    new = Hop(V("v1.0.2"), V("v1.1.0"))
+    # The old direction is handed over: its changes now travel with v1.0.2,
+    # whose own conflict gets a fresh issue.
+    assert rerouted.resolved == [old.key]
+    assert rerouted.paused == [new.key]
+    assert [new.marker in i.body for i in gh.issues.values()] == [True]
+
+    repo.git.run("checkout", "-q", "--detach", repo.sha("refs/heads/releases/v1.1.0"))
+    repo.git.run("merge", "-q", "--no-ff", src, check=False)
+    (repo.git.workdir / "README.md").write_text("resolved\n")
+    repo.git.run("add", "README.md")
+    repo.git.run("commit", "-q", "--no-edit")
+    repo.git.run("push", "-q", "origin", "HEAD:refs/heads/releases/v1.1.0")
+
+    resumed = run_cascade(repo.git, gh, trigger="resolved")
+    assert resumed.resolved == [new.key]
+    assert not gh.issues
+    assert len(gh.closed) == 2
+
+
 def test_rejected_push_replans(repo: Repo, gh: FakeGitHub) -> None:
     """Concurrent update of the target between fetch and push: re-plan, no lost commits."""
     _bootstrap(repo)
@@ -217,3 +256,19 @@ def test_land_forward_pr_refuses_sealed_target(repo: Repo, gh: FakeGitHub) -> No
     )
     with pytest.raises(ReleaseError, match="封版"):
         land_forward_pr(repo.git, gh, 8)
+
+
+def test_conflict_not_duplicated_when_issue_listing_lags(repo: Repo, gh: FakeGitHub) -> None:
+    """GitHub's issue listing is eventually consistent: a run that just created the
+    conflict issue must not create it again when it re-plans (BOT-40 drill)."""
+    _bootstrap(repo)
+    run_cascade(repo.git, gh, trigger="sync")
+    repo.commit("releases/v1.0.1", "README.md", "patch line\n", "BOT-91: patch")
+    repo.commit("releases/v1.1.0", "README.md", "regular line\n", "BOT-92: regular")
+    gh.find_issue = lambda marker: None  # type: ignore[method-assign]  # listing not caught up
+
+    report = run_cascade(repo.git, gh, trigger="PR #11")
+
+    assert report.paused == [Hop(V("v1.0.1"), V("v1.1.0")).key]
+    assert len(gh.issues) == 1
+    assert len(gh.notified) == 1

@@ -168,9 +168,18 @@ def _is_ancestor(git: Git, ancestor: str, descendant: str) -> bool:
         return False
 
 
+#: Cloudflare in front of the bot API and the Mini App answers 403 to urllib's
+#: default ``Python-urllib`` user agent (BOT-40 staging rehearsal).
+USER_AGENT = "akkiabot-release (+https://github.com/AkkiaLab/AkkiaBot)"
+
+
+def _get(url: str) -> urllib.request.Request:
+    return urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310 - fixed https URLs
+
+
 def fetch_json(url: str) -> dict[str, object] | None:
     try:
-        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310 - fixed https URLs
+        with urllib.request.urlopen(_get(url), timeout=15) as response:  # noqa: S310 - fixed https URLs
             return json.loads(response.read())
     except (urllib.error.URLError, TimeoutError, ValueError):
         return None
@@ -178,7 +187,7 @@ def fetch_json(url: str) -> dict[str, object] | None:
 
 def http_ok(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url, timeout=15) as response:  # noqa: S310 - fixed https URLs
+        with urllib.request.urlopen(_get(url), timeout=15) as response:  # noqa: S310 - fixed https URLs
             return 200 <= response.status < 300
     except (urllib.error.URLError, TimeoutError):
         return False

@@ -168,6 +168,10 @@ grafana-sync *args:
 release *args:
     uv run python -m scripts.release {{ args }}
 
+# Release flow CLI as the release App (needed for `create`: only the App may create release branches)
+release-app *args:
+    scripts/release/as-app.sh uv run python -m scripts.release {{ args }}
+
 # Deploy an RC to staging on this machine, then accept it in the same lock (scenarios: comma-separated; empty = full)
 release-staging tag scenarios="":
     uv run python -m scripts.release deploy staging {{ tag }} --accept {{ if scenarios != "" { "--scenarios " + scenarios } else { "" } }}

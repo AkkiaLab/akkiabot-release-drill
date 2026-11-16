@@ -28,6 +28,13 @@
 # 7 failed and rolled back, 8 failed and the rollback failed too, 75 busy.
 set -euo pipefail
 
+# The script normally arrives on stdin (`bash -s`). Bash reads such a script as
+# it goes, so a command that reads stdin (op inject does) would swallow the rest
+# of it and the script would end silently with status 0 half way through (BOT-40
+# staging rehearsal). Hence the whole body is one function, parsed completely
+# before anything runs, and it runs with stdin from /dev/null.
+main() {
+
 usage() { echo "usage: upgrade.sh <sha> --migrations changed|unchanged [--allow-migration] [--release <label>] [--render-template <path>]" >&2; exit 2; }
 
 [[ $# -ge 1 ]] || usage
@@ -182,3 +189,6 @@ fi
 echo "upgrade: rollback to $OLD failed as well; stack needs manual attention (snapshot $SNAP)" >&2
 record "failed-rollback-failed"
 exit 8
+}
+
+main "$@" </dev/null
