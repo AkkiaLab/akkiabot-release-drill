@@ -29,23 +29,31 @@ SEALED_RULE_TYPES = frozenset({"update", "deletion", "non_fast_forward"})
 CONFLICT_LABEL = "release-forward-conflict"
 FORWARD_LABEL = "release-forward"
 FIX_LABEL = "release:fix"
-#: The squad Reviewer's GitHub identity (docs/reviewer-github-app.md): the only
-#: approval that lets the release App land a conflict resolution.
-REVIEWER_LOGIN = "akkiabot-reviewer[bot]"
+#: Bot user ID of the workspace agent App ``akkialab-agent`` (App ID 5760780, formerly
+#: ``akkiabot-reviewer``; docs/reviewer-github-app.md). Its approval is the only one that
+#: lets the release flow land a conflict resolution. Matched by ID, never by login: the
+#: login follows the App name, the ID survives renames (AKKIA-25).
+REVIEWER_BOT_ID = 356702926
+#: Identity label of that App in gate results. Logins never contain spaces or
+#: parentheses, so no other account can map to this label.
+REVIEWER = f"Reviewer（App bot 用户 ID {REVIEWER_BOT_ID}）"
 
 
 def actor_identity(author: dict[str, Any] | None) -> str:
-    """GraphQL author → the REST/display identity used throughout (``REVIEWER_LOGIN``).
+    """GraphQL author → the identity used by the gate.
 
-    GraphQL reports an App as ``{"__typename": "Bot", "login": "akkiabot-reviewer"}``
-    while REST and the UI show ``akkiabot-reviewer[bot]``. Only a ``Bot`` gets the
-    suffix, so a *user* who registered the name ``akkiabot-reviewer`` can never
-    pass for the Reviewer App. Deleted accounts (``None``) become ``""``.
+    The Reviewer App is recognised only by ``__typename == "Bot"`` *and* its bot
+    user ID (``databaseId``), and becomes ``REVIEWER``. Other Apps become
+    ``<login>[bot]`` (GraphQL omits the ``[bot]`` suffix REST shows); users keep
+    their login, so a *user* or another App named like the Reviewer can never
+    pass for it. Deleted accounts (``None``) become ``""``.
     """
     if not author:
         return ""
     login = author.get("login") or ""
     if author.get("__typename") == "Bot":
+        if author.get("databaseId") == REVIEWER_BOT_ID:
+            return REVIEWER
         return f"{login}[bot]" if login else ""
     # GitHub user logins cannot contain brackets; never let one look like an App.
     return f"user:{login}" if login.endswith("[bot]") else login
@@ -77,6 +85,7 @@ class GitHub(Protocol):
     def set_sealed(self, branch: str, *, sealed: bool) -> None: ...
     def branch_rule_types(self, branch: str) -> set[str]: ...
     def find_issue(self, marker: str) -> Issue | None: ...
+    def open_conflict_issues(self) -> list[Issue]: ...
     def create_issue(self, title: str, body: str, labels: list[str]) -> Issue: ...
     def comment_issue(self, number: int, body: str) -> None: ...
     def close_issue(self, number: int, comment: str) -> None: ...
@@ -229,6 +238,16 @@ class GhCli:
                 return Issue(issue["number"], issue["body"], issue.get("html_url", ""))
         return None
 
+    def open_conflict_issues(self) -> list[Issue]:
+        issues = self._api(
+            self._r(f"issues?state=open&labels={CONFLICT_LABEL}&per_page=100"), paginate=True
+        )
+        return [
+            Issue(i["number"], i.get("body") or "", i.get("html_url", ""))
+            for i in issues or []
+            if "pull_request" not in i
+        ]
+
     def create_issue(self, title: str, body: str, labels: list[str]) -> Issue:
         data = self._api(
             self._r("issues"), method="POST", body={"title": title, "body": body, "labels": labels}
@@ -277,7 +296,7 @@ class GhCli:
     def review_gate(self, number: int, head: str) -> list[str]:
         """Problems that forbid landing ``head`` of PR ``number`` (empty = may land).
 
-        The release App bypasses the merge rules, so it re-checks them itself:
+        The agent App bypasses the merge rules, so it re-checks them itself:
         the Reviewer's newest review approves exactly ``head``; nobody's newest
         review requests changes; every review thread is resolved; and nobody but
         the PR author and the Reviewer commented after that approval (feedback
@@ -303,8 +322,8 @@ class GhCli:
     #: One GraphQL query per connection, paged oldest first until ``hasNextPage`` is false.
     REVIEW_CONNECTIONS: ClassVar[dict[str, str]] = {
         "threads": "reviewThreads(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { isResolved } }",
-        "reviews": "reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login } state submittedAt commit { oid } } }",
-        "comments": "comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login } createdAt } }",
+        "reviews": "reviews(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login ... on Bot { databaseId } } state submittedAt commit { oid } } }",
+        "comments": "comments(first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { author { __typename login ... on Bot { databaseId } } createdAt } }",
     }
     MAX_REVIEW_PAGES: int = 50
 
@@ -331,7 +350,7 @@ class GhCli:
             query = (
                 "query($owner: String!, $name: String!, $number: Int!, $after: String) {"
                 " repository(owner: $owner, name: $name) { pullRequest(number: $number) {"
-                f" author {{ __typename login }} {connection} }} }} }}"
+                f" author {{ __typename login ... on Bot {{ databaseId }} }} {connection} }} }} }}"
             )
             nodes: list[Any] = []
             after: str | None = None
@@ -495,9 +514,9 @@ def review_problems(
     for login, state, commit, at in reviews:
         if login != author and state in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}:
             latest[login] = (state, commit, at)
-    reviewer = latest.get(REVIEWER_LOGIN)
+    reviewer = latest.get(REVIEWER)
     if reviewer is None or reviewer[0] != "APPROVED" or reviewer[1] != head:
-        problems.append(f"{REVIEWER_LOGIN} 尚未在当前 head {head[:12]} 上给出准出（Approve）")
+        problems.append(f"{REVIEWER} 尚未在当前 head {head[:12]} 上给出准出（Approve）")
     blocked = sorted(
         login for login, (state, _, _) in latest.items() if state == "CHANGES_REQUESTED"
     )
@@ -511,14 +530,12 @@ def review_problems(
             {
                 login
                 for login, at in comments
-                if at > approved_at and login not in {author, REVIEWER_LOGIN}
+                if at > approved_at and login not in {author, REVIEWER}
             }
             | {
                 login
                 for login, state, _, at in reviews
-                if at > approved_at
-                and login not in {author, REVIEWER_LOGIN}
-                and state == "COMMENTED"
+                if at > approved_at and login not in {author, REVIEWER} and state == "COMMENTED"
             }
         )
         if late:
