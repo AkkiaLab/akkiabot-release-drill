@@ -38,7 +38,9 @@ MAX_HOPS = 50
 PUSH_ATTEMPTS = 3
 #: Checks the resolution PR head must have passed before it is landed.
 REQUIRED_CHECKS = ("ci-ok", "secret-scan", "release-guard")
-BOT_ID_RE = re.compile(r"\bBOT-[1-9][0-9]*\b")
+#: Multica issue ids (workspace prefix AKKIA) quoted in PR titles.
+ISSUE_ID_RE = re.compile(r"\bAKKIA-[1-9][0-9]*\b")
+MARKER_RE = re.compile(r"<!-- release-forward: (\S+)->(\S+) -->")
 
 
 def node_name(node: Version | None) -> str:
@@ -117,7 +119,7 @@ def conflict_body(
     target_prs: list[PullRequest],
     trigger: str,
 ) -> str:
-    tasks = sorted({m for pr in source_prs + target_prs for m in BOT_ID_RE.findall(pr.title)})
+    tasks = sorted({m for pr in source_prs + target_prs for m in ISSUE_ID_RE.findall(pr.title)})
     src, tgt = node_name(hop.source), node_name(hop.target)
     lines = [
         hop.marker,
@@ -132,7 +134,7 @@ def conflict_body(
         *_pr_lines(source_prs),
         "- 目标侧改动过冲突文件的 PR：",
         *_pr_lines(target_prs),
-        f"- 相关任务：{', '.join(tasks) if tasks else '（PR 标题中未找到 BOT 编号）'}",
+        f"- 相关任务：{', '.join(tasks) if tasks else '（PR 标题中未找到 AKKIA 编号）'}",
         "",
         "恢复（docs/release.md §3.3）：",
         "",
@@ -166,10 +168,14 @@ def run_cascade(
         _close_resolved(git, gh, state, sealed, report, dry_run=dry_run)
         actionable = []
         for hop in hops:
+            if hop.key in report.paused:
+                # Paused earlier in this run: the issue listing may lag behind the
+                # issue just created (eventually consistent), so do not ask it again.
+                continue
             issue = gh.find_issue(hop.marker)
             if issue is None:
                 actionable.append(hop)
-            elif hop.key not in report.paused:
+            else:
                 report.paused.append(hop.key)
         if not actionable:
             return report
@@ -243,21 +249,41 @@ def _close_resolved(
     *,
     dry_run: bool,
 ) -> None:
-    """Close conflict issues whose source is now contained in its current target."""
-    for version, sha in sorted(state.branches.items()):
-        target = next_receivable(version, state, sealed)
-        hop = Hop(version, target)
-        issue = gh.find_issue(hop.marker)
-        if issue is None:
+    """Close every open conflict issue whose source is now contained downstream.
+
+    An issue records the hop that conflicted (``source->target``). The source's
+    current target may have changed since: a patch release was created in
+    between, or the old target was sealed. So an issue is resolved when its
+    source tip is contained in the target it recorded *or* in the source's
+    current target; looking only at the current hop would leave the old
+    direction's issue open forever (BOT-40 drill).
+    """
+    for issue in gh.open_conflict_issues():
+        match = MARKER_RE.search(issue.body)
+        if match is None:
             continue
-        target_sha = state.master if target is None else state.branches[target]
-        if git.is_ancestor(sha, target_sha):
-            if not dry_run:
-                gh.close_issue(
-                    issue.number,
-                    f"已解决：`{sha[:12]}` 已包含在 `{node_name(target)}`（`{target_sha[:12]}`）中，继续逐级上合。",
-                )
-            report.resolved.append(hop.key)
+        try:
+            source = _version_or_none(match.group(1))
+            recorded = _version_or_none(match.group(2))
+        except ReleaseError:
+            continue
+        if source is None or source not in state.branches:
+            continue
+        sha = state.branches[source]
+        candidates = [recorded, next_receivable(source, state, sealed)]
+        for target in dict.fromkeys(candidates):
+            if target is not None and target not in state.branches:
+                continue
+            target_sha = state.master if target is None else state.branches[target]
+            if git.is_ancestor(sha, target_sha):
+                if not dry_run:
+                    gh.close_issue(
+                        issue.number,
+                        f"已解决：`{sha[:12]}` 已包含在 `{node_name(target)}`"
+                        f"（`{target_sha[:12]}`）中，继续逐级上合。",
+                    )
+                report.resolved.append(f"{match.group(1)}->{match.group(2)}")
+                break
 
 
 def land_forward_pr(git: Git, gh: GitHub, number: int) -> str:

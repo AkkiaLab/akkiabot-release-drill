@@ -134,6 +134,9 @@ class FakeGitHub:
     def find_issue(self, marker: str) -> Issue | None:
         return next((i for i in self.issues.values() if marker in i.body), None)
 
+    def open_conflict_issues(self) -> list[Issue]:
+        return list(self.issues.values())
+
     def create_issue(self, title: str, body: str, labels: list[str]) -> Issue:
         number = len(self.issues) + len(self.closed) + 1
         issue = Issue(number, body, f"https://example.invalid/issues/{number}")

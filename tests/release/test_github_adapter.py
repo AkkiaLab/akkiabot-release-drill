@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from scripts.release.github import GhCli, GhError, RunNotTerminatedError
+from scripts.release.github import REVIEWER_BOT_ID, GhCli, GhError, RunNotTerminatedError
 
 HEAD = "a" * 40
 
@@ -17,6 +17,7 @@ class ScriptedGh(GhCli):
         self.routes = routes  # path suffix -> value | list of values | Exception
         self.graph = graph or {}
         self.calls: list[tuple[str, str]] = []
+        self.queries: list[str] = []
         self.now = 0.0
         self.sleep = self._advance
         self.clock = lambda: self.now
@@ -46,6 +47,7 @@ class ScriptedGh(GhCli):
         return None
 
     def _graphql(self, query: str, variables: dict[str, Any]) -> Any:
+        self.queries.append(query)
         field = next(f for f in ("reviewThreads", "reviews", "comments") if f"{f}(" in query)
         pages = self.graph.get(field, [{"nodes": [], "hasNext": False}])
         index = int(variables.get("after") or 0)
@@ -112,10 +114,25 @@ def test_run_never_found_raises() -> None:
         gh.run_and_wait("webapp-deploy.yml", {}, "staging x n", timeout=30)
 
 
-#: The Reviewer App as the real GraphQL API reports it (read from PR #40, 2026-11-15):
-#: type Bot, login WITHOUT the ``[bot]`` suffix that REST and the UI show.
-REVIEWER_GRAPHQL = {"__typename": "Bot", "login": "akkiabot-reviewer"}
-COPILOT_GRAPHQL = {"__typename": "Bot", "login": "copilot-pull-request-reviewer"}
+#: The Reviewer App as the real GraphQL API reports it (read from PR #53, 2026-11-20):
+#: type Bot, login WITHOUT the ``[bot]`` suffix that REST and the UI show, and
+#: ``databaseId`` equal to the REST ``user.id``.
+REVIEWER_GRAPHQL = {
+    "__typename": "Bot",
+    "login": "akkiabot-reviewer",
+    "databaseId": REVIEWER_BOT_ID,
+}
+#: The same App after the rename to ``akkialab-agent`` (AKKIA-25): same ID, new login.
+RENAMED_REVIEWER_GRAPHQL = {
+    "__typename": "Bot",
+    "login": "akkialab-agent",
+    "databaseId": REVIEWER_BOT_ID,
+}
+COPILOT_GRAPHQL = {
+    "__typename": "Bot",
+    "login": "copilot-pull-request-reviewer",
+    "databaseId": 175728472,
+}
 
 
 def _user(login: str) -> dict[str, str]:
@@ -169,12 +186,14 @@ def test_review_gate_refuses_when_pages_cannot_be_exhausted() -> None:
         gh.review_gate(1, HEAD)
 
 
-def test_real_graphql_reviewer_shape_is_recognised() -> None:
-    """Regression: GraphQL says Bot/akkiabot-reviewer, not akkiabot-reviewer[bot]."""
+@pytest.mark.parametrize("reviewer", [REVIEWER_GRAPHQL, RENAMED_REVIEWER_GRAPHQL])
+def test_real_graphql_reviewer_shape_is_recognised(reviewer: dict[str, Any]) -> None:
+    """GraphQL says Bot/<slug> without ``[bot]``; the App is matched by its bot user ID,
+    so the gate keeps working before and after the App rename."""
     graph = {
         "reviews": [
             {
-                "nodes": [_review(REVIEWER_GRAPHQL, "APPROVED", "2026-11-15T10:00:00Z")],
+                "nodes": [_review(reviewer, "APPROVED", "2026-11-15T10:00:00Z")],
                 "hasNext": False,
             }
         ]
@@ -182,11 +201,27 @@ def test_real_graphql_reviewer_shape_is_recognised() -> None:
     assert ScriptedGh({}, graph).review_gate(1, HEAD) == []
 
 
+def test_review_gate_queries_bot_ids_for_every_author() -> None:
+    """Without ``databaseId`` the Reviewer could not be recognised at all."""
+    gh = ScriptedGh({})
+    gh.review_gate(1, HEAD)
+    assert gh.queries
+    for query in gh.queries:
+        assert query.count("author { __typename login ... on Bot { databaseId } }") == (
+            1 if "reviewThreads(" in query else 2
+        )
+
+
 @pytest.mark.parametrize(
     "author",
     [
         _user("akkiabot-reviewer"),  # a user squatting the App's name is not the App
-        _user("akkiabot-reviewer[bot]"),
+        _user("akkialab-agent[bot]"),
+        # Another App with the Reviewer's (old or new) name but a different ID.
+        {"__typename": "Bot", "login": "akkiabot-reviewer", "databaseId": 1},
+        {"__typename": "Bot", "login": "akkialab-agent", "databaseId": 1},
+        # A user whose account ID happens to equal the bot's: only a Bot counts.
+        {"__typename": "User", "login": "someone", "databaseId": REVIEWER_BOT_ID},
         {"__typename": "Bot", "login": "some-other-app"},
         None,  # deleted account
     ],
