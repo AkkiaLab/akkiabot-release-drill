@@ -38,7 +38,8 @@ MAX_HOPS = 50
 PUSH_ATTEMPTS = 3
 #: Checks the resolution PR head must have passed before it is landed.
 REQUIRED_CHECKS = ("ci-ok", "secret-scan", "release-guard")
-BOT_ID_RE = re.compile(r"\bBOT-[1-9][0-9]*\b")
+#: Multica issue ids (workspace prefix AKKIA) quoted in PR titles.
+ISSUE_ID_RE = re.compile(r"\bAKKIA-[1-9][0-9]*\b")
 MARKER_RE = re.compile(r"<!-- release-forward: (\S+)->(\S+) -->")
 
 
@@ -118,7 +119,7 @@ def conflict_body(
     target_prs: list[PullRequest],
     trigger: str,
 ) -> str:
-    tasks = sorted({m for pr in source_prs + target_prs for m in BOT_ID_RE.findall(pr.title)})
+    tasks = sorted({m for pr in source_prs + target_prs for m in ISSUE_ID_RE.findall(pr.title)})
     src, tgt = node_name(hop.source), node_name(hop.target)
     lines = [
         hop.marker,
@@ -133,7 +134,7 @@ def conflict_body(
         *_pr_lines(source_prs),
         "- 目标侧改动过冲突文件的 PR：",
         *_pr_lines(target_prs),
-        f"- 相关任务：{', '.join(tasks) if tasks else '（PR 标题中未找到 BOT 编号）'}",
+        f"- 相关任务：{', '.join(tasks) if tasks else '（PR 标题中未找到 AKKIA 编号）'}",
         "",
         "恢复（docs/release.md §3.3）：",
         "",
