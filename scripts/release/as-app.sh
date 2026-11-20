@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Run a command as the release GitHub App (docs/release.md §1, §7), e.g.
+# Run a command as the workspace agent App akkialab-agent with a *release*
+# purpose token (docs/release.md §1, §7; AKKIA-25), e.g.
 #   scripts/release/as-app.sh uv run python -m scripts.release create v1.4.1
 # Needed where the release rulesets only let the App write: creating release
 # branches (required checks are enforced on creation) and v* tags.
+# The token is requested with exactly the release permissions (same set as
+# PURPOSES["release"] in scripts/reviewer_gh.py and the release-setup action).
 # The App id and private key come from 1Password (AkkiaBot/release-app) through
 # the machine's service account token (same file as the acceptance tool). The
 # installation token is passed to gh (GH_TOKEN) and git (http.extraheader via
@@ -46,7 +49,8 @@ api() {
     curl -sSf -K - -H 'Accept: application/vnd.github+json' "$@"
 }
 installation=$(api "https://api.github.com/repos/$repo/installation" | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["id"])')
-token=$(api -X POST -d "{\"repositories\":[\"${repo#*/}\"]}" \
+permissions='{"actions":"write","administration":"write","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","statuses":"read"}'
+token=$(api -X POST -d "{\"repositories\":[\"${repo#*/}\"],\"permissions\":$permissions}" \
   "https://api.github.com/app/installations/$installation/access_tokens" |
   python3 -I -c 'import json, sys; print(json.load(sys.stdin)["token"])')
 unset jwt
