@@ -1,6 +1,7 @@
 name: Release setup
 description: >
-  Check that the release GitHub App is configured, mint its token and check out
+  Check that the release App credentials (workspace agent App) are configured,
+  mint a release-purpose token and check out
   master (the reviewed release tooling) with full history, pushing as the App.
   Pushes made with this token start workflows, unlike GITHUB_TOKEN; the flow
   does not rely on that and chains its steps explicitly (docs/release.md §7).
@@ -31,11 +32,23 @@ runs:
           echo "::error::release App not configured: ${missing[*]} (docs/release.md §7, BOT-40)"
           exit 1
         fi
+    # The App is the workspace agent App (akkialab-agent, AKKIA-25), shared with the
+    # Reviewer. Request exactly the release permissions, never "whatever the
+    # installation has": same set as PURPOSES["release"] in scripts/reviewer_gh.py
+    # and scripts/release/as-app.sh (tests/release/test_app_permissions.py).
     - id: app
       uses: actions/create-github-app-token@v2
       with:
         app-id: ${{ inputs.app-id }}
         private-key: ${{ inputs.private-key }}
+        permission-actions: write
+        permission-administration: write
+        permission-checks: read
+        permission-contents: write
+        permission-issues: write
+        permission-metadata: read
+        permission-pull-requests: write
+        permission-statuses: read
     - uses: actions/checkout@v7
       with:
         ref: master
