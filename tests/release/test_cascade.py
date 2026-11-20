@@ -5,7 +5,7 @@ import pytest
 from scripts.release.branches import create_release
 from scripts.release.cascade import Hop, land_forward_pr, plan, run_cascade
 from scripts.release.git import Git
-from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, REVIEWER_LOGIN, PullRequest
+from scripts.release.github import CONFLICT_LABEL, FORWARD_LABEL, REVIEWER, PullRequest
 from scripts.release.versions import ReleaseError, Version
 from tests.release.conftest import FakeGitHub, Repo
 
@@ -26,7 +26,7 @@ def test_forward_chain_reaches_master_and_keeps_merge_relation(repo: Repo, gh: F
     _bootstrap(repo)
     gh.sealed.add("releases/v1.0.0")
     run_cascade(repo.git, gh, trigger="bootstrap")
-    fix = repo.commit("releases/v1.0.1", "fix.txt", "fix\n", "BOT-90: fix")
+    fix = repo.commit("releases/v1.0.1", "fix.txt", "fix\n", "AKKIA-90: fix")
 
     report = run_cascade(repo.git, gh, trigger="PR #1")
 
@@ -74,10 +74,10 @@ def test_sealed_target_is_skipped_but_sealed_source_still_forwards(
 def test_conflict_pauses_one_direction_dedupes_and_resumes(repo: Repo, gh: FakeGitHub) -> None:
     _bootstrap(repo)
     run_cascade(repo.git, gh, trigger="sync")
-    src = repo.commit("releases/v1.0.1", "README.md", "patch line\n", "BOT-91: patch")
-    tgt = repo.commit("releases/v1.1.0", "README.md", "regular line\n", "BOT-92: regular")
-    gh.commit_prs[src] = [PullRequest(11, "BOT-91: patch", "releases/v1.0.1", "b", src, "a")]
-    gh.commit_prs[tgt] = [PullRequest(12, "BOT-92: regular", "releases/v1.1.0", "c", tgt, "a")]
+    src = repo.commit("releases/v1.0.1", "README.md", "patch line\n", "AKKIA-91: patch")
+    tgt = repo.commit("releases/v1.1.0", "README.md", "regular line\n", "AKKIA-92: regular")
+    gh.commit_prs[src] = [PullRequest(11, "AKKIA-91: patch", "releases/v1.0.1", "b", src, "a")]
+    gh.commit_prs[tgt] = [PullRequest(12, "AKKIA-92: regular", "releases/v1.1.0", "c", tgt, "a")]
 
     report = run_cascade(repo.git, gh, trigger="PR #11")
 
@@ -88,7 +88,7 @@ def test_conflict_pauses_one_direction_dedupes_and_resumes(repo: Repo, gh: FakeG
     assert len(gh.issues) == 1
     issue = next(iter(gh.issues.values()))
     assert hop.marker in issue.body
-    for expected in ("README.md", src, tgt, "#11", "#12", "BOT-91", "BOT-92", FORWARD_LABEL):
+    for expected in ("README.md", src, tgt, "#11", "#12", "AKKIA-91", "AKKIA-92", FORWARD_LABEL):
         assert expected in issue.body
     assert len(gh.notified) == 1
     assert gh.notified[0]["conflict_files"] == ["README.md"]
@@ -196,7 +196,7 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     head = dev.out("rev-parse", "HEAD")
     dev.run("push", "-q", "origin", f"{head}:refs/heads/forward/fix")
     dev.run("push", "-q", "origin", f"{head}:refs/pull/7/head")
-    pr = PullRequest(7, "BOT-93: 解决上合冲突", "releases/v1.1.0", "forward/fix", head, "AkkiaS7")
+    pr = PullRequest(7, "AKKIA-93: 解决上合冲突", "releases/v1.1.0", "forward/fix", head, "AkkiaS7")
     gh.prs[7] = pr
 
     with pytest.raises(ReleaseError, match="标签"):
@@ -209,10 +209,10 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     with pytest.raises(ReleaseError, match="准出"):
         land_forward_pr(repo.git, gh, 7)
     # Reviewer approved an older head: not enough.
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", "0" * 40, "2026-11-15T10:01:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", "0" * 40, "2026-11-15T10:01:00Z"))
     with pytest.raises(ReleaseError, match="准出"):
         land_forward_pr(repo.git, gh, 7)
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:02:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", head, "2026-11-15T10:02:00Z"))
     # Approved, but a review thread is still open.
     gh.unresolved[7] = 1
     with pytest.raises(ReleaseError, match="未解决的评审线程"):
@@ -222,7 +222,7 @@ def test_land_forward_pr_gates(repo: Repo, gh: FakeGitHub) -> None:
     gh.pr_comments[7] = [("Copilot", "2026-11-15T10:05:00Z"), ("AkkiaS7", "2026-11-15T10:06:00Z")]
     with pytest.raises(ReleaseError, match="Copilot"):
         land_forward_pr(repo.git, gh, 7)
-    gh.reviews[7].append((REVIEWER_LOGIN, "APPROVED", head, "2026-11-15T10:07:00Z"))
+    gh.reviews[7].append((REVIEWER, "APPROVED", head, "2026-11-15T10:07:00Z"))
     # Someone still requests changes.
     gh.reviews[7].append(("someone", "CHANGES_REQUESTED", head, "2026-11-15T10:08:00Z"))
     with pytest.raises(ReleaseError, match="Request changes"):
@@ -263,8 +263,8 @@ def test_conflict_not_duplicated_when_issue_listing_lags(repo: Repo, gh: FakeGit
     conflict issue must not create it again when it re-plans (BOT-40 drill)."""
     _bootstrap(repo)
     run_cascade(repo.git, gh, trigger="sync")
-    repo.commit("releases/v1.0.1", "README.md", "patch line\n", "BOT-91: patch")
-    repo.commit("releases/v1.1.0", "README.md", "regular line\n", "BOT-92: regular")
+    repo.commit("releases/v1.0.1", "README.md", "patch line\n", "AKKIA-91: patch")
+    repo.commit("releases/v1.1.0", "README.md", "regular line\n", "AKKIA-92: regular")
     gh.find_issue = lambda marker: None  # type: ignore[method-assign]  # listing not caught up
 
     report = run_cascade(repo.git, gh, trigger="PR #11")
